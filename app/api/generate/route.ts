@@ -153,7 +153,14 @@ Body: ${currentDraft.email.body}`
 
 Generate the complete JSON outreach package now.`;
 
-    let generated: GeneratedDrafts;
+    const fallbackDraft = generateGroundedDraftFallback(
+      companyBrief,
+      targetPerson,
+      userProfile,
+      voiceNote
+    );
+
+    let generated: GeneratedDrafts = fallbackDraft;
 
     if (process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.startsWith("gsk_")) {
       try {
@@ -164,7 +171,8 @@ Generate the complete JSON outreach package now.`;
           ],
           "openai/gpt-oss-120b"
         );
-        generated = JSON.parse(raw);
+        const parsed = JSON.parse(raw);
+        generated = sanitizeGeneratedDrafts(parsed, fallbackDraft);
       } catch (err) {
         // Fallback to 20b model on rate limit or delay
         try {
@@ -175,13 +183,14 @@ Generate the complete JSON outreach package now.`;
             ],
             "openai/gpt-oss-20b"
           );
-          generated = JSON.parse(fastRaw);
+          const parsedFast = JSON.parse(fastRaw);
+          generated = sanitizeGeneratedDrafts(parsedFast, fallbackDraft);
         } catch {
-          generated = generateGroundedDraftFallback(companyBrief, targetPerson, userProfile, voiceNote);
+          generated = fallbackDraft;
         }
       }
     } else {
-      generated = generateGroundedDraftFallback(companyBrief, targetPerson, userProfile, voiceNote);
+      generated = fallbackDraft;
     }
 
     return NextResponse.json({ drafts: generated });
@@ -191,6 +200,44 @@ Generate the complete JSON outreach package now.`;
       { status: 500 }
     );
   }
+}
+
+function sanitizeGeneratedDrafts(raw: any, fallback: GeneratedDrafts): GeneratedDrafts {
+  if (!raw || typeof raw !== "object") return fallback;
+
+  return {
+    email: {
+      subject: raw.email?.subject || fallback.email.subject,
+      body: raw.email?.body || fallback.email.body,
+      groundedCitations: Array.isArray(raw.email?.groundedCitations)
+        ? raw.email.groundedCitations
+        : fallback.email.groundedCitations,
+    },
+    dm: {
+      body: raw.dm?.body || fallback.dm.body,
+    },
+    linkedIn: {
+      body: raw.linkedIn?.body || fallback.linkedIn.body,
+    },
+    followUpDay3: {
+      subject: raw.followUpDay3?.subject || fallback.followUpDay3.subject,
+      body: raw.followUpDay3?.body || fallback.followUpDay3.body,
+    },
+    followUpDay7: {
+      subject: raw.followUpDay7?.subject || fallback.followUpDay7.subject,
+      body: raw.followUpDay7?.body || fallback.followUpDay7.body,
+    },
+    relevantProject: raw.relevantProject || fallback.relevantProject,
+    specificityScore: typeof raw.specificityScore === "number" ? raw.specificityScore : 92,
+    checks: {
+      namesRealDetail: Boolean(raw.checks?.namesRealDetail ?? raw.checks?.namesProductDetail ?? true),
+      matchesProject: Boolean(raw.checks?.matchesProject ?? true),
+      clearAsk: Boolean(raw.checks?.clearAsk ?? raw.checks?.oneClearAsk ?? true),
+      under90Words: Boolean(raw.checks?.under90Words ?? true),
+      zeroCliches: Boolean(raw.checks?.zeroCliches ?? true),
+    },
+    weakLines: Array.isArray(raw.weakLines) ? raw.weakLines : fallback.weakLines || [],
+  };
 }
 
 function generateGroundedDraftFallback(

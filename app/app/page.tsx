@@ -20,6 +20,7 @@ import {
   PipelineStatus,
 } from "@/lib/types";
 import {
+  INITIAL_USER_PROFILE,
   getStoredProfile,
   saveStoredProfile,
   getStoredPipeline,
@@ -53,8 +54,9 @@ import {
 
 export default function AppPage() {
   // Persistence state
-  const [userProfile, setUserProfile] = useState<UserProfile>(getStoredProfile());
+  const [userProfile, setUserProfile] = useState<UserProfile>(INITIAL_USER_PROFILE);
   const [pipeline, setPipeline] = useState<PipelineItem[]>([]);
+  const [mounted, setMounted] = useState(false);
 
   // Active Research State
   const [urlInput, setUrlInput] = useState("");
@@ -95,6 +97,7 @@ export default function AppPage() {
 
   // Load pipeline on mount
   useEffect(() => {
+    setMounted(true);
     setPipeline(getStoredPipeline());
     setUserProfile(getStoredProfile());
   }, []);

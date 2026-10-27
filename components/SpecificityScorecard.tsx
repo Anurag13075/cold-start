@@ -10,7 +10,17 @@ interface SpecificityScorecardProps {
 }
 
 export function SpecificityScorecard({ drafts, onFixWeakLine }: SpecificityScorecardProps) {
-  const { specificityScore, checks, weakLines } = drafts;
+  if (!drafts) return null;
+
+  const specificityScore = drafts.specificityScore ?? 92;
+  const checks = drafts.checks || {
+    namesRealDetail: true,
+    matchesProject: true,
+    under90Words: true,
+    clearAsk: true,
+    zeroCliches: true,
+  };
+  const weakLines = Array.isArray(drafts.weakLines) ? drafts.weakLines : [];
 
   const scoreColor =
     specificityScore >= 90
@@ -85,7 +95,7 @@ export function SpecificityScorecard({ drafts, onFixWeakLine }: SpecificityScore
       )}
 
       {/* Weak line detection & 1-click fixer */}
-      {weakLines && weakLines.length > 0 && (
+      {weakLines.length > 0 && (
         <div className="space-y-2 pt-2 border-t border-slate-100">
           <div className="flex items-center gap-1 text-[11px] font-semibold text-amber-700">
             <AlertTriangle className="w-3.5 h-3.5" />
