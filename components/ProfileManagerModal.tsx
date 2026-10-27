@@ -78,11 +78,22 @@ export function ProfileManagerModal({
     if (!githubUser.trim()) return;
     setIsImportingGithub(true);
     setGithubError("");
+
+    // Automatically clean any URL, @ or path format
+    let clean = githubUser.trim();
+    clean = clean
+      .replace(/^https?:\/\//i, "")
+      .replace(/^(?:www\.)?github\.com\//i, "")
+      .replace(/^@/, "")
+      .replace(/\/.*$/, "")
+      .trim();
+    setGithubUser(clean);
+
     try {
       const res = await fetch("/api/github-import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: githubUser.trim() }),
+        body: JSON.stringify({ username: clean }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -90,6 +101,9 @@ export function ProfileManagerModal({
       } else {
         setImportedRepos(data.projects || []);
         setSelectedRepoIds((data.projects || []).slice(0, 3).map((p: any) => p.id));
+        if (data.username) {
+          setGithubUser(data.username);
+        }
       }
     } catch (err: any) {
       setGithubError(err.message || "Network error fetching repos");
@@ -611,7 +625,7 @@ export function ProfileManagerModal({
                     type="text"
                     value={githubUser}
                     onChange={(e) => setGithubUser(e.target.value)}
-                    placeholder="e.g. torvalds or your-github-handle"
+                    placeholder="e.g. Anurag13075 or https://github.com/Anurag13075"
                     className="w-full pl-9 pr-3 py-2 rounded-lg border border-slate-200 text-xs"
                   />
                 </div>

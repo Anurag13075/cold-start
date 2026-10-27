@@ -11,7 +11,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const cleanUsername = username.trim().replace(/^@/, "");
+    // Clean username from any URL format, @-prefix, or trailing slash
+    let cleanUsername = username.trim();
+    cleanUsername = cleanUsername.replace(/^https?:\/\//i, "");
+    cleanUsername = cleanUsername.replace(/^(?:www\.)?github\.com\//i, "");
+    cleanUsername = cleanUsername.replace(/^@/, "");
+    cleanUsername = cleanUsername.replace(/\/.*$/, "").trim();
+
+    if (!cleanUsername) {
+      return NextResponse.json(
+        { error: "Please enter a valid GitHub username" },
+        { status: 400 }
+      );
+    }
 
     const res = await fetch(
       `https://api.github.com/users/${encodeURIComponent(cleanUsername)}/repos?sort=updated&per_page=30`,
@@ -41,35 +53,39 @@ export async function POST(req: NextRequest) {
 
     const repos = await res.json();
 
-    if (!Array.isArray(repos)) {
-      return NextResponse.json({ repos: [] });
+    if (!Array.isArray(repos) || repos.length === 0) {
+      return NextResponse.json({ projects: [], username: cleanUsername });
+    }
+
+    // Prioritize non-fork repos, but include forks if user only has forks
+    let filteredRepos = repos.filter((r: any) => !r.fork);
+    if (filteredRepos.length === 0) {
+      filteredRepos = repos;
     }
 
     // Format into clean ProjectItems
-    const projects = repos
-      .filter((r: any) => !r.fork) // Prioritize original creations
-      .slice(0, 15)
-      .map((r: any) => {
-        const techList: string[] = [];
-        if (r.language) techList.push(r.language);
-        if (Array.isArray(r.topics)) {
-          techList.push(...r.topics.slice(0, 4));
-        }
+    const projects = filteredRepos.slice(0, 20).map((r: any) => {
+      const techList: string[] = [];
+      if (r.language) techList.push(r.language);
+      if (Array.isArray(r.topics)) {
+        techList.push(...r.topics.slice(0, 4));
+      }
 
-        return {
-          id: r.name.toLowerCase().replace(/[^a-z0-9]/g, "-"),
-          name: r.name,
-          description: r.description || "Open-source software project built by user.",
-          result: r.stargazers_count > 0 
-            ? `${r.stargazers_count} GitHub stars, active open source repo`
+      return {
+        id: r.name.toLowerCase().replace(/[^a-z0-9]/g, "-"),
+        name: r.name,
+        description: r.description || "Open-source software repository built by user.",
+        result:
+          r.stargazers_count > 0
+            ? `${r.stargazers_count} GitHub star(s), active repository`
             : "Production-ready open-source codebase",
-          tech: Array.from(new Set(techList)),
-          liveUrl: r.homepage || "",
-          repoUrl: r.html_url || "",
-          images: [],
-          isShowcase: r.stargazers_count > 5,
-        };
-      });
+        tech: techList.length > 0 ? Array.from(new Set(techList)) : ["TypeScript", "Code"],
+        liveUrl: r.homepage || "",
+        repoUrl: r.html_url || "",
+        images: [],
+        isShowcase: r.stargazers_count > 0,
+      };
+    });
 
     return NextResponse.json({ projects, username: cleanUsername });
   } catch (err: any) {
