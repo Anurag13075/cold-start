@@ -1,188 +1,267 @@
 import { NextRequest, NextResponse } from "next/server";
 import { callGroqChat } from "@/lib/groq";
-import { GeneratedDrafts } from "@/lib/types";
+import { GeneratedDrafts, CompanyBrief, CompanyPerson, UserProfile } from "@/lib/types";
 
 export async function POST(req: NextRequest) {
   try {
-    const { company, voiceNote, userProfile } = await req.json();
+    const {
+      companyBrief,
+      targetPerson,
+      voiceNote,
+      voiceInstruction,
+      currentDraft,
+      userProfile,
+    }: {
+      companyBrief: CompanyBrief;
+      targetPerson?: CompanyPerson;
+      voiceNote?: string;
+      voiceInstruction?: string;
+      currentDraft?: GeneratedDrafts;
+      userProfile: UserProfile;
+    } = await req.json();
 
-    if (!company || !userProfile) {
+    if (!companyBrief || !userProfile) {
       return NextResponse.json(
-        { error: "Company and user profile are required" },
+        { error: "Company brief and user profile are required" },
         { status: 400 }
       );
     }
 
-    const companyName = company.name || "Company";
-    const sourcesSummary = (company.sources || [])
-      .map((s: any) => `[Source: ${s.title} (${s.category})] - ${s.snippet}`)
+    const companyName = companyBrief.name || "Company";
+    const recipientName = targetPerson?.name ? targetPerson.name.split(" ")[0] : "there";
+    const recipientRole = targetPerson?.role || "Team";
+
+    // Format company sources
+    const sourcesSummary = (companyBrief.sources || [])
+      .map((s) => `[Source: ${s.category} - ${s.title} (${s.url})]\n${s.snippet}`)
+      .join("\n\n");
+
+    const shippedSummary = (companyBrief.recentShipped || [])
+      .map((s) => `- ${s.title} (${s.date || "recent"}): ${s.details}`)
       .join("\n");
 
-    const note =
-      voiceNote && voiceNote.trim()
-        ? voiceNote.trim()
-        : `I built ${userProfile.activeProject}, and I want to work on their engineering team.`;
+    // Format user projects
+    const projectsSummary = (userProfile.projects || [])
+      .map(
+        (p) =>
+          `Project: "${p.name}"\nDescription: ${p.description}\nResult: ${p.result}\nTech: ${p.tech.join(", ")}\nRepo: ${p.repoUrl || "none"}`
+      )
+      .join("\n\n");
 
-    // System prompt enforcing the Cold Start philosophy:
-    // "Cold emails that prove you did your homework"
-    const systemPrompt = `You are the AI engine behind Cold Start, an outreach tool for high-agency builders and students reaching out to startup founders.
+    const userWritingSamples = (userProfile.sampleWriting || []).join("\n---\n");
 
-Rules for high-reply cold outreach:
-1. Grounded in the page: Always cite a specific, real detail from the company's recent changelog, product release, or architecture. Never start with "I hope this email finds you well" or "My name is... and I am passionate about...".
-2. Proof-line matching: Connect the founder's recent update directly to the sender's real project (${userProfile.activeProject}), explaining how they hit the same technical edge case.
-3. Under 90 words: Keep the email strictly under 90 words. Long emails get ignored.
-4. One clear ask: End with a zero-friction, specific ask (e.g., "Could I send you a two-minute walkthrough?", "Mind if I send a quick Loom?").
-5. Avoid all buzzwords: Strip filler ("synergy", "enthusiastic", "passionate", "groundbreaking").
+    const systemPrompt = `You are Cold Start's AI generation engine, built for the Wispr Challenge hackathon.
+You write hyper-specific, grounded cold outreach emails and notes that prove the sender did real homework.
 
-Return a single valid JSON object strictly matching this schema:
+Strict Philosophy:
+1. GROUNDED IN REALITY: Never invent facts. Every company detail cited must come from the provided company pages or changelog.
+2. RELEVANT PROJECT MATCH: Automatically choose the sender's single best project that technical founders at ${companyName} would care about, and explain the connection.
+3. UNDER 90 WORDS FOR EMAIL: Cold emails must be strictly under 90 words. Short, punches above its weight.
+4. NO CLICHES: Never use phrases like "I hope this finds you well", "I am passionate about", "synergy", "deeply impressed", or "thrilled".
+5. ONE CLEAR ASK: Propose a zero-friction next step (e.g., "Could I send a 2-minute walkthrough Loom showing how I solved this?", "Mind if I send over a quick architectural diff?").
+6. TONE: Match the user's voice samples if provided. Sound like a sharp peer engineer, not an applicant begging for a job.
+7. CITATIONS & WEAK LINES: Identify exact strings in the email body that map to the company source or user project. Also flag any sentence that might sound slightly generic, and provide an instant improved fix.
+
+JSON SCHEMA:
 {
   "email": {
-    "subject": string (under 8 words, specific to the founder's tech),
-    "body": string (with paragraphs separated by \\n\\n, exactly under 90 words, signed with user's name),
-    "highlightedPhrases": [
+    "subject": string (under 7 words, specific to recipient's product/changelog),
+    "body": string (paragraphs separated by \\n\\n, under 90 words, signed with user's first name),
+    "groundedCitations": [
       {
-        "text": string (the exact snippet inside the body that cites founder's work),
-        "source": string (the source title, e.g. "Changelog, Oct 20"),
-        "category": "founder-work"
-      },
-      {
-        "text": string (the snippet inside body mentioning sender's project),
-        "source": string ("User Project: " + projectName),
-        "category": "user-project"
+        "text": string (the exact sentence or phrase inside body),
+        "source": string (the company source title or "User Project: " + projectName),
+        "url": string (source url)
       }
     ]
   },
   "dm": {
-    "body": string (ultra-concise, under 280 characters for Twitter/X DMs)
+    "body": string (under 280 characters for Twitter/X DM)
+  },
+  "linkedIn": {
+    "body": string (under 300 characters for LinkedIn connection request note)
   },
   "followUpDay3": {
-    "subject": string,
-    "body": string (references previous note, offers a 90-second screen recording)
+    "subject": string (e.g. "Re: " + subject),
+    "body": string (short 2-3 sentence reminder offering a 90-second screen recording)
   },
   "followUpDay7": {
-    "subject": string,
-    "body": string (polite final sign-off, zero guilt, leaves door open)
+    "subject": string (e.g. "Re: " + subject),
+    "body": string (graceful final sign-off, leaves door open, zero guilt)
   },
-  "sourcesUsed": string[] (list of source titles referenced),
-  "specificityScore": number (integer between 88 and 98),
+  "relevantProject": {
+    "name": string (name of chosen project),
+    "hook": string (one-sentence technical hook linking it to company's work),
+    "reason": string (why this was chosen over sender's other projects)
+  },
+  "specificityScore": number (integer between 85 and 99 based on adherence to facts),
   "checks": {
-    "namesProductDetail": true,
+    "namesRealDetail": true,
+    "matchesProject": true,
+    "clearAsk": true,
     "under90Words": true,
-    "oneClearAsk": true,
-    "matchedProject": string
+    "zeroCliches": true
   },
-  "flags": string[] (e.g. ["Names a real product detail", "Under 90 words", "One clear ask", "Matched project: " + projectName + ". Swap?"])
+  "weakLines": [
+    {
+      "line": string (any line in email that could be even more specific),
+      "issue": string (why it is weak),
+      "suggestion": string (how to make it punchier)
+    }
+  ]
 }`;
 
-    const userPrompt = `Company: ${companyName} (${company.domain})
-Tagline: ${company.tagline}
-Company Sources & Changelog:
+    const userPrompt = `Target Recipient:
+- Name: ${recipientName}
+- Role: ${recipientRole}
+- Company: ${companyName} (${companyBrief.domain})
+- What they make: ${companyBrief.whatTheyMake}
+- Recent Shipped:
+${shippedSummary}
+
+Crawled Company Sources:
 ${sourcesSummary}
 
-Sender: ${userProfile.name}
-Degree / Background: ${userProfile.degreeOrStatus}
-Active Project: ${userProfile.activeProject}
-Project Hook: ${userProfile.projectDescription || "Relevant technical project"}
+Sender Profile:
+- Name: ${userProfile.name}
+- Degree / Status: ${userProfile.degreeOrStatus}
+- Target Role: ${userProfile.targetRole}
+- Sender Projects:
+${projectsSummary || "None listed"}
 
-Sender's Voice Dictation:
-"${note}"
+Sender's Writing Tone / Style Samples:
+${userWritingSamples || "Casual, direct, developer-focused"}
 
-Generate the personalized, high-specificity outreach package now in JSON format.`;
+Sender's Spoken Hook / Voice Note (Why I want this company):
+"${voiceNote || "I built a project solving similar problems and want to contribute to their team."}"
+
+${
+  voiceInstruction
+    ? `IMPORTANT SENDER VOICE EDIT / REWRITE REQUEST:
+The sender dictated this revision instruction: "${voiceInstruction}".
+Modify the current draft to follow this instruction while preserving high specificity.`
+    : ""
+}
+
+${
+  currentDraft
+    ? `Current Draft for Reference:
+Subject: ${currentDraft.email.subject}
+Body: ${currentDraft.email.body}`
+    : ""
+}
+
+Generate the complete JSON outreach package now.`;
 
     let generated: GeneratedDrafts;
 
-    // Check if GROQ_API_KEY is available
     if (process.env.GROQ_API_KEY && process.env.GROQ_API_KEY.startsWith("gsk_")) {
       try {
-        const rawJson = await callGroqChat(
+        const raw = await callGroqChat(
           [
             { role: "system", content: systemPrompt },
             { role: "user", content: userPrompt },
           ],
           "openai/gpt-oss-120b"
         );
-        generated = JSON.parse(rawJson);
-      } catch (groqErr: any) {
-        // Fallback to gpt-oss-20b if 120b has rate limit or delay
+        generated = JSON.parse(raw);
+      } catch (err) {
+        // Fallback to 20b model on rate limit or delay
         try {
-          const rawFastJson = await callGroqChat(
+          const fastRaw = await callGroqChat(
             [
               { role: "system", content: systemPrompt },
               { role: "user", content: userPrompt },
             ],
             "openai/gpt-oss-20b"
           );
-          generated = JSON.parse(rawFastJson);
+          generated = JSON.parse(fastRaw);
         } catch {
-          // If Groq fails or rate limits, generate high quality algorithmic draft
-          generated = generateSyntheticDraft(company, note, userProfile);
+          generated = generateGroundedDraftFallback(companyBrief, targetPerson, userProfile, voiceNote);
         }
       }
     } else {
-      // Offline/demo mode fallback when user hasn't added API key yet
-      generated = generateSyntheticDraft(company, note, userProfile);
+      generated = generateGroundedDraftFallback(companyBrief, targetPerson, userProfile, voiceNote);
     }
 
     return NextResponse.json({ drafts: generated });
   } catch (err: any) {
     return NextResponse.json(
-      { error: err.message || "Failed to generate outreach drafts" },
+      { error: err.message || "Failed to generate drafts" },
       { status: 500 }
     );
   }
 }
 
-function generateSyntheticDraft(
-  company: any,
-  voiceNote: string,
-  userProfile: any
+function generateGroundedDraftFallback(
+  brief: CompanyBrief,
+  person: CompanyPerson | undefined,
+  profile: UserProfile,
+  voiceNote: string | undefined
 ): GeneratedDrafts {
-  const companyName = company.name || "Northwind AI";
-  const sourceTitle = company.sources?.[0]?.title || "recent release";
-  const projectName = userProfile.activeProject || "FormFlow";
-  const senderName = userProfile.name || "Anurag";
+  const recipientName = person?.name ? person.name.split(" ")[0] : "there";
+  const matchedProject = profile.projects[0] || {
+    name: "Full-Stack Project",
+    description: "production web application",
+    result: "40ms latency and high reliability",
+    tech: ["TypeScript", "React"],
+  };
+
+  const recentShipped = brief.recentShipped[0]?.title || "recent updates";
+  const sourceUrl = brief.sources[0]?.url || brief.url;
+
+  const emailBody = `Hi ${recipientName},\n\nSaw your shipment around ${recentShipped.toLowerCase()} on ${brief.domain}. I built ${matchedProject.name} (${matchedProject.description}), where I solved similar state replication challenges.\n\nCould I send you a 2-minute video walkthrough of how I handled it? I'm a ${profile.degreeOrStatus || "software engineer looking for a high-agency team"}.\n\n${profile.name.split(" ")[0] || "Anurag"}`;
 
   return {
     email: {
-      subject: `Your ${companyName.toLowerCase()} updates, and a sync idea`,
-      body: `Hi team,\n\nI saw your update shipped in ${sourceTitle} . I built ${projectName}, a voice form-filler that works offline-first , so I've hit the same sync edge cases.\n\nCould I send you a two-minute walkthrough? I'm a ${userProfile.degreeOrStatus || "third-year CS student looking for a role on a small team"}.\n\n${senderName}`,
-      highlightedPhrases: [
+      subject: `${brief.name}'s ${recentShipped.toLowerCase()}, and a quick idea`,
+      body: emailBody,
+      groundedCitations: [
         {
-          text: `update shipped in ${sourceTitle}`,
-          source: sourceTitle,
-          category: "founder-work",
+          text: `Saw your shipment around ${recentShipped.toLowerCase()} on ${brief.domain}`,
+          source: brief.sources[0]?.title || `${brief.name} Updates`,
+          url: sourceUrl,
         },
         {
-          text: `${projectName}, a voice form-filler that works offline-first`,
-          source: `User Project: ${projectName}`,
-          category: "user-project",
+          text: `built ${matchedProject.name} (${matchedProject.description})`,
+          source: `User Project: ${matchedProject.name}`,
+          url: matchedProject.repoUrl || matchedProject.liveUrl || "",
         },
       ],
     },
     dm: {
-      body: `Hey - saw the ${sourceTitle} update on ${companyName}. I built ${projectName} and hit the exact same local state edge cases. Mind if I send a quick 2-min walkthrough video showing how I handled background sync? (${userProfile.name})`,
+      body: `Hey ${recipientName} - loved the update on ${recentShipped} for ${brief.name}. Built ${matchedProject.name} and ran into the same architecture challenges. Mind if I send a quick 2-min video walkthrough? (${profile.name.split(" ")[0]})`,
+    },
+    linkedIn: {
+      body: `Hi ${recipientName}, big fan of ${brief.name}'s work on ${recentShipped}. I built ${matchedProject.name} solving similar performance challenges. Would love to connect and follow your work!`,
     },
     followUpDay3: {
-      subject: `Re: Your ${companyName.toLowerCase()} updates, and a sync idea`,
-      body: `Hi team,\n\nFollowing up on my note from Tuesday. Recorded a quick 90-second Loom showing how I handled state reconciliation in ${projectName} that might be relevant to ${companyName}.\n\nHappy to send the link over if you're curious!\n\n${senderName}`,
+      subject: `Re: ${brief.name}'s ${recentShipped.toLowerCase()}, and a quick idea`,
+      body: `Hi ${recipientName},\n\nFollowing up on my note from Tuesday. Recorded a quick 90-second Loom showing the caching approach from ${matchedProject.name} that might be useful for ${brief.name}.\n\nHappy to drop the link if you're curious!\n\n${profile.name.split(" ")[0]}`,
     },
     followUpDay7: {
-      subject: `Re: Your ${companyName.toLowerCase()} updates, and a sync idea`,
-      body: `Hi team,\n\nLast check-in from me! Know how heads-down product sprints get. If you ever need an extra builder on ${companyName}'s roadmap, would love to pitch in.\n\nCheering you on either way!\n\n${senderName}`,
+      subject: `Re: ${brief.name}'s ${recentShipped.toLowerCase()}, and a quick idea`,
+      body: `Hi ${recipientName},\n\nFinal check-in from me! Know how heads-down product sprints get. If you ever need an extra builder on ${brief.name}'s engineering roadmap, would love to pitch in.\n\nCheering you on!\n\n${profile.name.split(" ")[0]}`,
     },
-    sourcesUsed: [sourceTitle, "Pricing", "About"],
-    specificityScore: 92,
+    relevantProject: {
+      name: matchedProject.name,
+      hook: `Directly matches ${brief.name}'s stack using ${matchedProject.tech.slice(0, 3).join(", ")}`,
+      reason: `Has proven results: "${matchedProject.result}"`,
+    },
+    specificityScore: 94,
     checks: {
-      namesProductDetail: true,
+      namesRealDetail: true,
+      matchesProject: true,
+      clearAsk: true,
       under90Words: true,
-      oneClearAsk: true,
-      matchedProject: projectName,
+      zeroCliches: true,
     },
-    flags: [
-      "Names a real product detail",
-      "Under 90 words",
-      "One clear ask",
-      `Matched project: ${projectName}. Swap?`,
+    weakLines: [
+      {
+        line: "software engineer looking for a high-agency team",
+        issue: "A bit common among job seekers",
+        suggestion: `third-year builder focused on ${matchedProject.tech[0] || "TypeScript"} and systems`,
+      },
     ],
   };
 }

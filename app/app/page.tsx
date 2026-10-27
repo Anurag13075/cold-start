@@ -4,23 +4,31 @@ import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { Logo } from "@/components/Logo";
 import { Waveform } from "@/components/Waveform";
-import { ProfileModal } from "@/components/ProfileModal";
+import { ProfileManagerModal } from "@/components/ProfileManagerModal";
 import { ReplyCoachModal } from "@/components/ReplyCoachModal";
+import { AutopilotDrawer } from "@/components/AutopilotDrawer";
+import { JobToolsModal } from "@/components/JobToolsModal";
+import { RealStatsModal } from "@/components/RealStatsModal";
+import { PeopleSelector } from "@/components/PeopleSelector";
+import { SpecificityScorecard } from "@/components/SpecificityScorecard";
 import {
-  DEFAULT_USER_PROFILE,
-  INITIAL_COMPANY,
-  INITIAL_DRAFTS,
-  INITIAL_PIPELINE,
-  REPLY_METRICS,
-} from "@/lib/sample-data";
-import {
-  ScrapedCompany,
+  UserProfile,
+  CompanyBrief,
+  CompanyPerson,
   GeneratedDrafts,
   PipelineItem,
-  UserProfile,
+  PipelineStatus,
 } from "@/lib/types";
 import {
+  getStoredProfile,
+  saveStoredProfile,
+  getStoredPipeline,
+  saveStoredPipeline,
+  getStoredDoNotContact,
+} from "@/lib/storage";
+import {
   Mic,
+  MicOff,
   Copy,
   ExternalLink,
   RotateCcw,
@@ -32,41 +40,72 @@ import {
   AlertCircle,
   Clock,
   MessageSquare,
+  Globe,
+  User,
+  Zap,
+  BarChart2,
+  Rocket,
+  ShieldAlert,
+  Calendar,
+  Wand2,
+  Share2,
 } from "lucide-react";
 
 export default function AppPage() {
-  // State
-  const [urlInput, setUrlInput] = useState("northwind.ai");
-  const [company, setCompany] = useState<ScrapedCompany>(INITIAL_COMPANY);
-  const [userProfile, setUserProfile] = useState<UserProfile>(DEFAULT_USER_PROFILE);
-  const [drafts, setDrafts] = useState<GeneratedDrafts>(INITIAL_DRAFTS);
-  const [pipeline, setPipeline] = useState<PipelineItem[]>(INITIAL_PIPELINE);
-  const [activeTab, setActiveTab] = useState<"email" | "dm" | "day3" | "day7">("email");
+  // Persistence state
+  const [userProfile, setUserProfile] = useState<UserProfile>(getStoredProfile());
+  const [pipeline, setPipeline] = useState<PipelineItem[]>([]);
 
-  const [voiceNote, setVoiceNote] = useState(
-    "I built FormFlow, a voice form-filler that works offline-first, and I want to work on sync."
-  );
-  const [isRecording, setIsRecording] = useState(false);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isReadingPage, setIsReadingPage] = useState(false);
-  const [copied, setCopied] = useState(false);
-  const [pipelineAdded, setPipelineAdded] = useState(false);
+  // Active Research State
+  const [urlInput, setUrlInput] = useState("");
+  const [companyBrief, setCompanyBrief] = useState<CompanyBrief | null>(null);
+  const [people, setPeople] = useState<CompanyPerson[]>([]);
+  const [selectedPerson, setSelectedPerson] = useState<CompanyPerson | null>(null);
+  const [drafts, setDrafts] = useState<GeneratedDrafts | null>(null);
 
-  // Modals
-  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  // Loading & Progress
+  const [isResearching, setIsResearching] = useState(false);
+  const [researchStep, setResearchStep] = useState<string>("");
+  const [researchError, setResearchError] = useState<string>("");
+
+  // Voice & Edits
+  const [voiceNote, setVoiceNote] = useState("");
+  const [voiceInstruction, setVoiceInstruction] = useState("");
+  const [isRecordingHook, setIsRecordingHook] = useState(false);
+  const [isRecordingEdit, setIsRecordingEdit] = useState(false);
+  const [isUpdatingDraft, setIsUpdatingDraft] = useState(false);
+
+  // Active Tab for Drafts
+  const [activeDraftTab, setActiveDraftTab] = useState<
+    "email" | "dm" | "linkedin" | "day3" | "day7"
+  >("email");
+  const [copiedDraft, setCopiedDraft] = useState(false);
+
+  // Modals & Drawers
+  const [isProfileOpen, setIsProfileOpen] = useState(false);
+  const [isAutopilotOpen, setIsAutopilotOpen] = useState(false);
+  const [isJobToolsOpen, setIsJobToolsOpen] = useState(false);
+  const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [selectedReplyItem, setSelectedReplyItem] = useState<PipelineItem | null>(null);
 
-  // Recognition ref
+  // Anti-repeat override warning state
+  const [antiRepeatWarning, setAntiRepeatWarning] = useState<string | null>(null);
+
   const recognitionRef = useRef<any>(null);
 
-  // Keyboard shortcut listener for Fn key or hold to speak
+  // Load pipeline on mount
+  useEffect(() => {
+    setPipeline(getStoredPipeline());
+    setUserProfile(getStoredProfile());
+  }, []);
+
+  // Keyboard shortcut listener: Hold F2 or Alt+V to dictate voice hook
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Check for Fn or Alt key or ` key for hold to speak
       if (e.key === "F2" || (e.altKey && e.key === "v")) {
         e.preventDefault();
-        if (!isRecording) {
-          startListening();
+        if (!isRecordingHook) {
+          startVoiceRecording((text) => setVoiceNote(text), setIsRecordingHook);
         }
       }
     };
@@ -74,8 +113,8 @@ export default function AppPage() {
     const handleKeyUp = (e: KeyboardEvent) => {
       if (e.key === "F2" || (e.altKey && e.key === "v")) {
         e.preventDefault();
-        if (isRecording) {
-          stopListening();
+        if (isRecordingHook) {
+          stopVoiceRecording(setIsRecordingHook);
         }
       }
     };
@@ -86,723 +125,875 @@ export default function AppPage() {
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
-  }, [isRecording]);
+  }, [isRecordingHook]);
 
-  // Voice recording toggle using browser Web Speech API
-  const startListening = () => {
-    setIsRecording(true);
+  // Voice recording helper using Web Speech API
+  const startVoiceRecording = (
+    onText: (trans: string) => void,
+    setRecordingState: (state: boolean) => void
+  ) => {
+    setRecordingState(true);
     if (typeof window !== "undefined" && ("webkitSpeechRecognition" in window || "SpeechRecognition" in window)) {
       const SpeechRecognition =
         (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-      const recognition = new SpeechRecognition();
-      recognition.continuous = true;
-      recognition.interimResults = true;
-      recognition.lang = "en-US";
+      const rec = new SpeechRecognition();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = "en-US";
 
-      recognition.onresult = (event: any) => {
+      rec.onresult = (e: any) => {
         let transcript = "";
-        for (let i = event.resultIndex; i < event.results.length; ++i) {
-          transcript += event.results[i][0].transcript;
+        for (let i = 0; i < e.results.length; i++) {
+          transcript += e.results[i][0].transcript;
         }
         if (transcript.trim()) {
-          setVoiceNote(transcript);
+          onText(transcript);
         }
       };
 
-      recognition.onerror = () => {
-        setIsRecording(false);
-      };
-
-      recognition.onend = () => {
-        setIsRecording(false);
-      };
-
-      try {
-        recognition.start();
-        recognitionRef.current = recognition;
-      } catch {}
-    } else {
-      // Simulation if microphone permission is absent
-      const simulatedNotes = [
-        `I built ${userProfile.activeProject}, and I want to work on ${company.name}'s offline sync infrastructure.`,
-        `Saw your changelog on conflict-free data types. Built ${userProfile.activeProject} with similar local-first sync.`,
-        `I'm a CS student focused on distributed state. Would love to send a two-minute walkthrough of ${userProfile.activeProject}.`,
-      ];
-      const pick = simulatedNotes[Math.floor(Math.random() * simulatedNotes.length)];
-      setTimeout(() => {
-        setVoiceNote(pick);
-        setIsRecording(false);
-      }, 1500);
+      rec.onerror = () => setRecordingState(false);
+      rec.onend = () => setRecordingState(false);
+      rec.start();
+      recognitionRef.current = rec;
     }
   };
 
-  const stopListening = () => {
-    setIsRecording(false);
+  const stopVoiceRecording = (setRecordingState: (state: boolean) => void) => {
     if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch {}
+      recognitionRef.current.stop();
     }
+    setRecordingState(false);
   };
 
-  const toggleRecording = () => {
-    if (isRecording) {
-      stopListening();
-      // Auto-trigger regeneration on finish recording
-      generateOutreach(company, voiceNote, userProfile);
-    } else {
-      startListening();
-    }
-  };
-
-  // Read URL handler
-  const handleReadPage = async () => {
+  // Run Real Company Research
+  const handleStartResearch = async (overrideRepeat = false) => {
     if (!urlInput.trim()) return;
-    setIsReadingPage(true);
+
+    // Check anti-spam & anti-repeat
+    const cleanDomain = urlInput
+      .toLowerCase()
+      .replace(/^https?:\/\//, "")
+      .replace(/^www\./, "")
+      .split("/")[0];
+
+    const dncList = getStoredDoNotContact();
+    const isBlocked = dncList.some((dnc) => cleanDomain.includes(dnc.domainOrEmail.toLowerCase()));
+    if (isBlocked) {
+      setResearchError(`Domain ${cleanDomain} is on your Do-Not-Contact list.`);
+      return;
+    }
+
+    if (!overrideRepeat) {
+      const thirtyDaysAgo = Date.now() - 30 * 24 * 60 * 60 * 1000;
+      const recentlySent = pipeline.find((p) => {
+        if (!p.companyDomain.toLowerCase().includes(cleanDomain)) return false;
+        if (!p.sentAt) return false;
+        return new Date(p.sentAt).getTime() > thirtyDaysAgo;
+      });
+
+      if (recentlySent) {
+        setAntiRepeatWarning(
+          `You already sent an outreach email to ${recentlySent.companyName} on ${new Date(
+            recentlySent.sentAt!
+          ).toLocaleDateString()}. Re-contacting within 30 days is discouraged.`
+        );
+        return;
+      }
+    }
+
+    setAntiRepeatWarning(null);
+    setIsResearching(true);
+    setResearchError("");
+    setCompanyBrief(null);
+    setDrafts(null);
+
     try {
-      const res = await fetch("/api/scrape", {
+      // Stage 1: Crawl real pages
+      setResearchStep("Reading pages (home, about, team, changelog)...");
+      const resScrape = await fetch("/api/research", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: urlInput }),
       });
-      const data = await res.json();
-      if (data.company) {
-        setCompany(data.company);
-        // Regenerate drafts with new company
-        await generateOutreach(data.company, voiceNote, userProfile);
+      const data = await resScrape.json();
+
+      if (!resScrape.ok || !data.brief) {
+        throw new Error(data.error || "Failed to research company pages");
       }
-    } catch {
-      // Fallback
+
+      setCompanyBrief(data.brief);
+      setPeople(data.people || []);
+
+      const recommendedPerson =
+        data.people?.find((p: any) => p.isRecommended) || data.people?.[0] || null;
+      setSelectedPerson(recommendedPerson);
+
+      // Stage 2: Generate Grounded Outreach Drafts
+      setResearchStep("Drafting high-specificity outreach with Groq...");
+      const resDraft = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyBrief: data.brief,
+          targetPerson: recommendedPerson,
+          voiceNote: voiceNote.trim() || undefined,
+          userProfile,
+        }),
+      });
+      const draftData = await resDraft.json();
+
+      if (!resDraft.ok || !draftData.drafts) {
+        throw new Error(draftData.error || "Failed to generate outreach drafts");
+      }
+
+      setDrafts(draftData.drafts);
+    } catch (err: any) {
+      setResearchError(err.message || "Failed to complete company research");
     } finally {
-      setIsReadingPage(false);
+      setIsResearching(false);
+      setResearchStep("");
     }
   };
 
-  // Generate outreach call
-  const generateOutreach = async (
-    targetCompany: ScrapedCompany,
-    note: string,
-    profile: UserProfile
-  ) => {
-    setIsLoading(true);
+  // Re-draft with voice edit instruction
+  const handleApplyVoiceEdit = async () => {
+    if (!companyBrief || !drafts || !voiceInstruction.trim()) return;
+    setIsUpdatingDraft(true);
     try {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          company: targetCompany,
-          voiceNote: note,
-          userProfile: profile,
+          companyBrief,
+          targetPerson: selectedPerson || undefined,
+          voiceNote: voiceNote.trim() || undefined,
+          voiceInstruction: voiceInstruction.trim(),
+          currentDraft: drafts,
+          userProfile,
         }),
       });
       const data = await res.json();
-      if (data.drafts) {
+      if (res.ok && data.drafts) {
+        setDrafts(data.drafts);
+        setVoiceInstruction("");
+      }
+    } catch {
+      // Continue
+    } finally {
+      setIsUpdatingDraft(false);
+    }
+  };
+
+  // Specificity Scorecard: Apply 1-Click Fix for weak line
+  const handleFixWeakLine = (oldLine: string, newLine: string) => {
+    if (!drafts) return;
+    const updatedBody = drafts.email.body.replace(oldLine, newLine);
+    setDrafts({
+      ...drafts,
+      email: {
+        ...drafts.email,
+        body: updatedBody,
+      },
+      weakLines: drafts.weakLines.filter((wl) => wl.line !== oldLine),
+      specificityScore: Math.min(100, drafts.specificityScore + 2),
+    });
+  };
+
+  // Switch Target Recipient
+  const handleSelectPerson = async (person: CompanyPerson) => {
+    setSelectedPerson(person);
+    if (!companyBrief || !drafts) return;
+
+    setIsUpdatingDraft(true);
+    try {
+      const res = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          companyBrief,
+          targetPerson: person,
+          voiceNote: voiceNote.trim() || undefined,
+          userProfile,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.drafts) {
         setDrafts(data.drafts);
       }
     } catch {
-      // Fallback
+      // Continue
     } finally {
-      setIsLoading(false);
+      setIsUpdatingDraft(false);
     }
   };
 
-  // Copy handler
-  const handleCopy = () => {
-    let contentToCopy = drafts.email.body;
-    if (activeTab === "dm") contentToCopy = drafts.dm.body;
-    if (activeTab === "day3") contentToCopy = drafts.followUpDay3.body;
-    if (activeTab === "day7") contentToCopy = drafts.followUpDay7.body;
+  // Send via Gmail (Zero-OAuth Instant Send)
+  const handleSendViaGmail = (item?: PipelineItem) => {
+    const brief = item ? item.brief : companyBrief;
+    const targetDrafts = item ? item.drafts : drafts;
+    const person = item ? item.person : selectedPerson;
 
-    navigator.clipboard.writeText(contentToCopy);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
-  };
+    if (!brief || !targetDrafts) return;
 
-  // Add to pipeline
-  const handleAddToPipeline = () => {
-    const existing = pipeline.find((p) => p.domain === company.domain);
-    if (!existing) {
-      const newItem: PipelineItem = {
-        id: `pipe-${Date.now()}`,
-        companyName: company.name,
-        domain: company.domain,
-        avatarLetter: company.name.slice(0, 1).toUpperCase(),
-        avatarBgColor: "bg-blue-100 text-blue-700",
-        status: "sent",
-        timeAgo: "Just now",
-        lastSubject: drafts.email.subject,
-        lastMessageSnippet: drafts.email.body.slice(0, 60) + "...",
-      };
-      setPipeline([newItem, ...pipeline]);
-    }
-    setPipelineAdded(true);
-    setTimeout(() => setPipelineAdded(false), 2000);
-  };
+    const recipientEmail = person?.email || "";
+    const subject = encodeURIComponent(targetDrafts.email.subject);
+    const body = encodeURIComponent(targetDrafts.email.body);
 
-  // Swap active project
-  const handleSwapProject = () => {
-    const currentIndex = userProfile.projects.findIndex(
-      (p) => p.name === userProfile.activeProject
-    );
-    const nextIndex = (currentIndex + 1) % userProfile.projects.length;
-    const nextProject = userProfile.projects[nextIndex];
-    const updatedProfile = {
-      ...userProfile,
-      activeProject: nextProject.name,
+    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(
+      recipientEmail
+    )}&su=${subject}&body=${body}`;
+
+    window.open(gmailUrl, "_blank");
+
+    // Mark as Sent & Schedule Day 3 and Day 7 follow-up dates
+    const now = new Date();
+    const day3Date = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
+    const day7Date = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
+
+    const existingId = item ? item.id : `pipeline-${Date.now()}`;
+    const updatedPipeline = [...pipeline];
+    const existingIdx = updatedPipeline.findIndex((p) => p.id === existingId);
+
+    const updatedItem: PipelineItem = {
+      id: existingId,
+      companyDomain: brief.domain,
+      companyName: brief.name,
+      companyUrl: brief.url,
+      person: person || {
+        id: "p1",
+        name: "Founder",
+        role: "Team",
+        emailReliability: "Guess (unverified)",
+        isRecommended: true,
+      },
+      status: "Sent",
+      createdAt: item?.createdAt || now.toISOString(),
+      sentAt: now.toISOString(),
+      followUpDay3Due: day3Date,
+      followUpDay7Due: day7Date,
+      drafts: targetDrafts,
+      brief,
     };
-    setUserProfile(updatedProfile);
 
-    // Update voice note and regenerate
-    const newNote = `I built ${nextProject.name}, ${nextProject.description}, and I want to work with ${company.name}.`;
-    setVoiceNote(newNote);
-    generateOutreach(company, newNote, updatedProfile);
+    if (existingIdx >= 0) {
+      updatedPipeline[existingIdx] = updatedItem;
+    } else {
+      updatedPipeline.unshift(updatedItem);
+    }
+
+    setPipeline(updatedPipeline);
+    saveStoredPipeline(updatedPipeline);
   };
 
-  // Gmail compose link
-  const currentSubject =
-    activeTab === "email"
-      ? drafts.email.subject
-      : activeTab === "day3"
-      ? drafts.followUpDay3.subject
-      : activeTab === "day7"
-      ? drafts.followUpDay7.subject
-      : `Quick note for ${company.name}`;
+  // Update status in pipeline
+  const handleUpdateStatus = (id: string, newStatus: PipelineStatus) => {
+    const updated = pipeline.map((item) => {
+      if (item.id === id) {
+        return {
+          ...item,
+          status: newStatus,
+          replyDate: newStatus === "Replied" ? new Date().toISOString() : item.replyDate,
+        };
+      }
+      return item;
+    });
+    setPipeline(updated);
+    saveStoredPipeline(updated);
+  };
 
-  const currentBody =
-    activeTab === "email"
-      ? drafts.email.body
-      : activeTab === "dm"
-      ? drafts.dm.body
-      : activeTab === "day3"
-      ? drafts.followUpDay3.body
-      : drafts.followUpDay7.body;
+  // Follow-ups due today calculation
+  const followUpsDueToday = pipeline.filter((item) => {
+    if (["Replied", "Closed", "Interview"].includes(item.status)) return false;
+    if (!item.followUpDay3Due) return false;
+    const dueTime = new Date(item.followUpDay3Due).getTime();
+    return Date.now() >= dueTime;
+  });
 
-  const gmailComposeUrl = `https://mail.google.com/mail/?view=cm&fs=1&su=${encodeURIComponent(
-    currentSubject
-  )}&body=${encodeURIComponent(currentBody)}`;
+  const getActiveDraftContent = () => {
+    if (!drafts) return "";
+    switch (activeDraftTab) {
+      case "email":
+        return drafts.email.body;
+      case "dm":
+        return drafts.dm.body;
+      case "linkedin":
+        return drafts.linkedIn.body;
+      case "day3":
+        return drafts.followUpDay3.body;
+      case "day7":
+        return drafts.followUpDay7.body;
+    }
+  };
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text);
+    setCopiedDraft(true);
+    setTimeout(() => setCopiedDraft(false), 2000);
+  };
 
   return (
-    <div className="min-h-screen bg-[#f8f9fb] text-slate-900 flex flex-col font-sans">
-      {/* Top Navbar matching screenshot 2 */}
-      <header className="bg-white border-b border-slate-200/80 sticky top-0 z-40 px-6 py-3">
-        <div className="max-w-7xl mx-auto flex items-center justify-between gap-4">
-          {/* Logo */}
-          <Logo size="md" href="/" />
+    <div className="min-h-screen bg-slate-100/70 text-slate-900 font-sans flex flex-col">
+      {/* Top Navigation Bar */}
+      <header className="border-b border-slate-200 bg-white sticky top-0 z-30 px-6 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <Link href="/">
+            <Logo />
+          </Link>
+          <span className="text-slate-300">|</span>
+          <span className="text-xs font-semibold text-slate-500">
+            Wispr Challenge Workspace
+          </span>
+        </div>
 
-          {/* Omnibox URL input */}
-          <div className="flex-1 max-w-xl mx-auto flex items-center gap-2">
+        {/* Action Controls */}
+        <div className="flex items-center gap-2">
+          {/* Autopilot Button */}
+          <button
+            onClick={() => setIsAutopilotOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-purple-200 bg-purple-50 text-purple-700 hover:bg-purple-100 text-xs font-bold transition-colors"
+          >
+            <Zap className="w-3.5 h-3.5 text-purple-600" />
+            <span>Autopilot (Batch URLs)</span>
+          </button>
+
+          {/* Superchargers */}
+          {companyBrief && (
+            <button
+              onClick={() => setIsJobToolsOpen(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 text-xs font-bold transition-colors"
+            >
+              <Rocket className="w-3.5 h-3.5 text-blue-600" />
+              <span>Job Tools &amp; Pitch</span>
+            </button>
+          )}
+
+          {/* Real Stats Button */}
+          <button
+            onClick={() => setIsStatsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-50 text-xs font-semibold transition-colors"
+          >
+            <BarChart2 className="w-3.5 h-3.5 text-slate-500" />
+            <span>Stats</span>
+          </button>
+
+          {/* Profile Manager */}
+          <button
+            onClick={() => setIsProfileOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-black text-xs font-bold transition-colors shadow-sm"
+          >
+            <User className="w-3.5 h-3.5" />
+            <span>Profile ({userProfile.projects.length} Projects)</span>
+          </button>
+        </div>
+      </header>
+
+      {/* Follow-Ups Due Today Alert Banner */}
+      {followUpsDueToday.length > 0 && (
+        <div className="bg-amber-500 text-white px-6 py-2.5 flex items-center justify-between text-xs font-medium shadow-inner">
+          <div className="flex items-center gap-2">
+            <Clock className="w-4 h-4 animate-spin text-white" />
+            <span>
+              <strong>Action required:</strong> You have {followUpsDueToday.length} follow-up(s) due today!
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] opacity-90">
+              Next: {followUpsDueToday[0].companyName}
+            </span>
+            <button
+              onClick={() => handleSendViaGmail(followUpsDueToday[0])}
+              className="px-2.5 py-1 bg-white text-amber-800 rounded font-bold text-xs hover:bg-amber-50"
+            >
+              1-Click Send via Gmail
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Main Container */}
+      <main className="flex-1 max-w-7xl mx-auto w-full px-6 py-6 space-y-6">
+        {/* Research Input Bar */}
+        <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-sm space-y-3">
+          <div className="flex flex-col sm:flex-row gap-2">
             <div className="relative flex-1">
+              <Globe className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
               <input
                 type="text"
                 value={urlInput}
                 onChange={(e) => setUrlInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleReadPage()}
-                placeholder="founder's website or company domain (e.g. northwind.ai)"
-                className="w-full px-4 py-2 text-sm rounded-full border border-slate-200 bg-slate-50/50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all font-mono text-slate-800"
+                onKeyDown={(e) => e.key === "Enter" && handleStartResearch()}
+                placeholder="Paste founder's company URL to research for real (e.g. resend.com, vercel.com)..."
+                className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono text-slate-800 focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
+
             <button
-              onClick={handleReadPage}
-              disabled={isReadingPage}
-              className="inline-flex items-center justify-center px-4 py-2 rounded-full bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold shadow-xs transition-all active:scale-95 disabled:opacity-50 whitespace-nowrap"
+              onClick={() => handleStartResearch()}
+              disabled={isResearching || !urlInput.trim()}
+              className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-colors flex items-center justify-center gap-2 shrink-0 disabled:opacity-50 shadow-sm"
             >
-              {isReadingPage ? (
+              {isResearching ? (
                 <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
-                  <span>Reading...</span>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>{researchStep || "Researching..."}</span>
                 </>
               ) : (
-                <span>Read page</span>
+                <>
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>Research &amp; Draft</span>
+                </>
               )}
             </button>
           </div>
 
-          {/* Right Status Indicator & Avatar */}
-          <div className="flex items-center gap-3">
-            <div className="hidden sm:inline-flex items-center gap-1.5 text-xs text-slate-600 font-medium px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-full">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span>Flow ready, hold Fn</span>
+          {/* Anti-Repeat 30-Day Warning Modal / Alert */}
+          {antiRepeatWarning && (
+            <div className="p-3 bg-amber-50 border border-amber-200 text-amber-900 rounded-xl text-xs flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+                <span>{antiRepeatWarning}</span>
+              </div>
+              <button
+                onClick={() => handleStartResearch(true)}
+                className="px-3 py-1 bg-amber-600 text-white rounded-lg font-bold text-[11px] hover:bg-amber-700 shrink-0"
+              >
+                Override &amp; Draft Anyway
+              </button>
+            </div>
+          )}
+
+          {researchError && (
+            <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-xl text-xs flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0" />
+              <span>{researchError}</span>
+            </div>
+          )}
+
+          {/* Voice Hook Bar (Spoken note why I want this company) */}
+          <div className="pt-2 border-t border-slate-100 flex flex-col sm:flex-row items-center gap-2 text-xs">
+            <div className="flex items-center gap-2 shrink-0 font-semibold text-slate-700">
+              <span className="w-2 h-2 rounded-full bg-blue-600"></span>
+              <span>15s Spoken Hook:</span>
             </div>
 
-            {/* Profile Avatar Button */}
-            <button
-              onClick={() => setIsProfileModalOpen(true)}
-              title="Edit sender profile & projects"
-              className="w-8 h-8 rounded-full bg-blue-100 text-blue-700 hover:bg-blue-200 border border-blue-200 font-bold text-xs flex items-center justify-center transition-all shadow-xs"
-            >
-              {userProfile.name.slice(0, 1)}
-            </button>
+            <div className="flex-1 w-full flex items-center gap-2">
+              <input
+                type="text"
+                value={voiceNote}
+                onChange={(e) => setVoiceNote(e.target.value)}
+                placeholder="Hold F2 or click mic: speak 15s why you want this company..."
+                className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800"
+              />
+
+              {isRecordingHook ? (
+                <button
+                  onClick={() => stopVoiceRecording(setIsRecordingHook)}
+                  className="px-3 py-1.5 bg-red-600 text-white rounded-lg font-bold flex items-center gap-1 shrink-0 animate-pulse"
+                >
+                  <MicOff className="w-3.5 h-3.5" />
+                  <span>Stop</span>
+                </button>
+              ) : (
+                <button
+                  onClick={() =>
+                    startVoiceRecording((text) => setVoiceNote(text), setIsRecordingHook)
+                  }
+                  className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-semibold flex items-center gap-1 shrink-0"
+                  title="Speak hook using mic (or Wispr Flow)"
+                >
+                  <Mic className="w-3.5 h-3.5 text-blue-600" />
+                  <span>Mic [F2]</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
-      </header>
 
-      {/* Main App 2-Column Layout */}
-      <main className="flex-1 max-w-7xl mx-auto w-full p-6">
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
-          {/* ================= LEFT COLUMN ================= */}
-          <div className="lg:col-span-8 space-y-6">
-            {/* Card 1: Company Profile Card */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex items-center gap-3.5">
-                  <div className="w-11 h-11 rounded-xl bg-blue-50 text-blue-600 font-bold text-lg flex items-center justify-center border border-blue-100 flex-shrink-0">
-                    {company.name.slice(0, 1)}
-                  </div>
-                  <div>
-                    <h2 className="text-lg font-bold text-slate-900 leading-tight">
-                      {company.name}
-                    </h2>
-                    <p className="text-xs text-slate-500 mt-0.5">{company.tagline}</p>
-                  </div>
-                </div>
-
-                <span className="text-[11px] font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200/80 px-2.5 py-1 rounded-full whitespace-nowrap">
-                  {company.sources.length} sources read
-                </span>
-              </div>
-
-              {/* Source tags */}
-              <div className="flex flex-wrap gap-2 pt-1 text-xs">
-                {company.sources.map((src) => (
-                  <span
-                    key={src.id}
-                    className="px-2.5 py-1 rounded-md bg-slate-50 border border-slate-200 text-slate-600 font-medium hover:border-slate-300 transition-colors cursor-default"
-                    title={src.snippet}
+        {/* Live Research Results Workspace */}
+        {companyBrief && drafts ? (
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 animate-in fade-in">
+            {/* Left Column: Discovered Intelligence & People */}
+            <div className="lg:col-span-4 space-y-4">
+              {/* Company Brief Card */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-bold text-slate-900 text-sm">{companyBrief.name}</h3>
+                  <a
+                    href={companyBrief.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-slate-400 hover:text-slate-700 text-xs flex items-center gap-1"
                   >
-                    {src.title}
-                  </span>
-                ))}
-              </div>
-
-              {/* Voice Input Banner */}
-              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center gap-3">
-                <button
-                  onClick={toggleRecording}
-                  className={`w-9 h-9 rounded-full flex items-center justify-center text-white transition-all shadow-sm flex-shrink-0 ${
-                    isRecording
-                      ? "bg-red-500 animate-pulse scale-105"
-                      : "bg-blue-600 hover:bg-blue-700"
-                  }`}
-                  title="Click to dictate or hold Fn"
-                >
-                  <Mic className="w-4 h-4" />
-                </button>
-
-                <Waveform isRecording={isRecording} bars={10} className="hidden sm:flex" />
-
-                <div className="flex-1 min-w-0">
-                  <p className="text-xs text-slate-700 italic truncate font-sans">
-                    &ldquo;{voiceNote}&rdquo;
-                  </p>
+                    <span>{companyBrief.domain}</span>
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
                 </div>
 
-                <button
-                  onClick={toggleRecording}
-                  className="px-3 py-1 rounded-lg text-xs font-semibold text-slate-600 bg-white border border-slate-200 hover:bg-slate-50 transition-all flex items-center gap-1 flex-shrink-0"
-                >
-                  <RotateCcw className="w-3 h-3 text-slate-400" />
-                  <span>{isRecording ? "Finish" : "Re-record"}</span>
-                </button>
+                <div className="text-xs text-slate-600">
+                  <strong>What they make:</strong> {companyBrief.whatTheyMake}
+                </div>
+
+                <div className="pt-2 border-t border-slate-100">
+                  <div className="font-semibold text-slate-700 text-xs mb-1">
+                    Verified Shipments:
+                  </div>
+                  <div className="space-y-1">
+                    {companyBrief.recentShipped.map((s, idx) => (
+                      <div
+                        key={idx}
+                        className="p-1.5 bg-slate-50 border rounded text-[11px] text-slate-700"
+                      >
+                        <span className="font-bold text-slate-900">{s.title}:</span> {s.details}
+                      </div>
+                    ))}
+                  </div>
+                </div>
               </div>
+
+              {/* People & Founders Discovery */}
+              <div className="p-4 bg-white border border-slate-200 rounded-2xl shadow-sm">
+                <PeopleSelector
+                  people={people}
+                  selectedPersonId={selectedPerson?.id || ""}
+                  onSelectPerson={handleSelectPerson}
+                />
+              </div>
+
+              {/* Specificity Scorecard & Weak Line Fixer */}
+              <SpecificityScorecard drafts={drafts} onFixWeakLine={handleFixWeakLine} />
             </div>
 
-            {/* Card 2: Generated Output & Tabs */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-5">
-              {/* Tab Navigation */}
-              <div className="flex items-center gap-6 border-b border-slate-100 text-xs font-semibold text-slate-500">
-                <button
-                  onClick={() => setActiveTab("email")}
-                  className={`pb-2.5 transition-all relative ${
-                    activeTab === "email"
-                      ? "text-blue-600 border-b-2 border-blue-600 font-bold"
-                      : "hover:text-slate-800"
-                  }`}
-                >
-                  Email
-                </button>
-                <button
-                  onClick={() => setActiveTab("dm")}
-                  className={`pb-2.5 transition-all relative ${
-                    activeTab === "dm"
-                      ? "text-blue-600 border-b-2 border-blue-600 font-bold"
-                      : "hover:text-slate-800"
-                  }`}
-                >
-                  X DM
-                </button>
-                <button
-                  onClick={() => setActiveTab("day3")}
-                  className={`pb-2.5 transition-all relative ${
-                    activeTab === "day3"
-                      ? "text-blue-600 border-b-2 border-blue-600 font-bold"
-                      : "hover:text-slate-800"
-                  }`}
-                >
-                  Follow-up, day 3
-                </button>
-                <button
-                  onClick={() => setActiveTab("day7")}
-                  className={`pb-2.5 transition-all relative ${
-                    activeTab === "day7"
-                      ? "text-blue-600 border-b-2 border-blue-600 font-bold"
-                      : "hover:text-slate-800"
-                  }`}
-                >
-                  Follow-up, day 7
-                </button>
-              </div>
+            {/* Right Column: Grounded Outreach Drafts & Voice Rewriting */}
+            <div className="lg:col-span-8 space-y-4">
+              <div className="p-5 bg-white border border-slate-200 rounded-2xl shadow-sm space-y-4">
+                {/* Draft Navigation Tabs */}
+                <div className="flex flex-wrap items-center justify-between border-b border-slate-100 pb-3 gap-2">
+                  <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-xl text-xs font-semibold">
+                    <button
+                      onClick={() => setActiveDraftTab("email")}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${
+                        activeDraftTab === "email"
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Email (&lt;90w)
+                    </button>
+                    <button
+                      onClick={() => setActiveDraftTab("dm")}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${
+                        activeDraftTab === "dm"
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      X DM
+                    </button>
+                    <button
+                      onClick={() => setActiveDraftTab("linkedin")}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${
+                        activeDraftTab === "linkedin"
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      LinkedIn Note
+                    </button>
+                    <button
+                      onClick={() => setActiveDraftTab("day3")}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${
+                        activeDraftTab === "day3"
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Day 3 Follow-Up
+                    </button>
+                    <button
+                      onClick={() => setActiveDraftTab("day7")}
+                      className={`px-3 py-1.5 rounded-lg transition-colors ${
+                        activeDraftTab === "day7"
+                          ? "bg-white text-slate-900 shadow-sm"
+                          : "text-slate-600 hover:text-slate-900"
+                      }`}
+                    >
+                      Day 7 Final
+                    </button>
+                  </div>
 
-              {/* Tab Content Display */}
-              <div className="space-y-4">
-                {/* Subject Line (For Email and Follow-ups) */}
-                {activeTab !== "dm" && (
-                  <div>
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider block mb-0.5">
-                      Subject
+                  {/* Actions: Copy & Send via Gmail */}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => copyToClipboard(getActiveDraftContent())}
+                      className="px-3 py-1.5 border border-slate-200 text-slate-700 hover:bg-slate-50 rounded-lg text-xs font-semibold flex items-center gap-1.5"
+                    >
+                      {copiedDraft ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                      <span>{copiedDraft ? "Copied" : "Copy"}</span>
+                    </button>
+
+                    <button
+                      onClick={() => handleSendViaGmail()}
+                      className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>Send via Gmail (No OAuth)</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Email Subject line if on email tab */}
+                {activeDraftTab === "email" && (
+                  <div className="p-2.5 bg-slate-50 border border-slate-200 rounded-xl text-xs flex items-center justify-between">
+                    <div>
+                      <span className="text-slate-400 font-semibold mr-2">Subject:</span>
+                      <span className="font-bold text-slate-900">{drafts.email.subject}</span>
+                    </div>
+                    <span className="text-[10px] text-slate-500 font-mono">
+                      To: {selectedPerson?.email || `founder@${companyBrief.domain}`}
                     </span>
-                    <h3 className="text-sm font-bold text-slate-900 font-sans">
-                      {currentSubject}
-                    </h3>
                   </div>
                 )}
 
-                {/* Body Content */}
-                <div className="text-xs text-slate-800 leading-relaxed font-sans whitespace-pre-wrap space-y-3 pt-1">
-                  {activeTab === "email" ? (
-                    // Render highlighted email body matching screenshot 2
-                    <div>
-                      <p className="mb-3">Hi Priya,</p>
-                      <p className="mb-3 leading-loose">
-                        I saw{" "}
-                        <span className="bg-slate-100 text-slate-900 border-b-2 border-blue-300 font-medium px-1 rounded-xs">
-                          offline mode shipped in your Oct 20 changelog
-                        </span>
-                        . I built{" "}
-                        <span className="bg-slate-100 text-slate-900 border-b-2 border-indigo-300 font-medium px-1 rounded-xs">
-                          FormFlow, a voice form-filler that works offline-first
-                        </span>
-                        , so I&apos;ve hit the same sync edge cases.
-                      </p>
-                      <p className="mb-3 leading-relaxed">
-                        Could I send you a two-minute walkthrough? I&apos;m a third-year CS student
-                        looking for a role on a small team.
-                      </p>
-                      <p>Anurag</p>
+                {/* Draft Body Content */}
+                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 font-sans whitespace-pre-line leading-relaxed min-h-[140px]">
+                  {getActiveDraftContent()}
+                </div>
+
+                {/* Grounded Citations (Only on Email tab) */}
+                {activeDraftTab === "email" && drafts.email.groundedCitations?.length > 0 && (
+                  <div className="space-y-1.5 pt-2 border-t border-slate-100">
+                    <div className="font-semibold text-slate-700 text-xs">
+                      Grounded Citations:
                     </div>
+                    <div className="space-y-1">
+                      {drafts.email.groundedCitations.map((cite, i) => (
+                        <div
+                          key={i}
+                          className="p-2 bg-blue-50/50 border border-blue-200/60 rounded-lg text-[11px] text-blue-950 flex items-start justify-between gap-2"
+                        >
+                          <div>
+                            <span className="font-bold text-blue-900">{cite.source}:</span>{" "}
+                            <span>&ldquo;{cite.text}&rdquo;</span>
+                          </div>
+                          {cite.url && (
+                            <a
+                              href={cite.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-blue-600 shrink-0 p-0.5"
+                            >
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Spoken Voice Rewrite / Instruction Input */}
+                <div className="pt-3 border-t border-slate-100 flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="text"
+                      value={voiceInstruction}
+                      onChange={(e) => setVoiceInstruction(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleApplyVoiceEdit()}
+                      placeholder="Speak voice edit: e.g. 'Make it punchier', 'Cite my Rust project instead'..."
+                      className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800"
+                    />
+                  </div>
+
+                  {isRecordingEdit ? (
+                    <button
+                      onClick={() => stopVoiceRecording(setIsRecordingEdit)}
+                      className="px-3 py-2 bg-red-600 text-white rounded-xl font-bold text-xs flex items-center gap-1 shrink-0 animate-pulse"
+                    >
+                      <MicOff className="w-3.5 h-3.5" />
+                      <span>Stop</span>
+                    </button>
                   ) : (
-                    <div className="bg-slate-50/60 p-4 rounded-xl border border-slate-100 text-slate-800 text-xs leading-relaxed font-sans">
-                      {currentBody}
+                    <button
+                      onClick={() =>
+                        startVoiceRecording(
+                          (text) => setVoiceInstruction(text),
+                          setIsRecordingEdit
+                        )
+                      }
+                      className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold text-xs flex items-center gap-1 shrink-0"
+                    >
+                      <Mic className="w-3.5 h-3.5 text-blue-600" />
+                      <span>Voice Edit</span>
+                    </button>
+                  )}
+
+                  <button
+                    onClick={handleApplyVoiceEdit}
+                    disabled={isUpdatingDraft || !voiceInstruction.trim()}
+                    className="px-4 py-2 bg-slate-900 hover:bg-black text-white rounded-xl font-bold text-xs flex items-center gap-1 shrink-0 disabled:opacity-50"
+                  >
+                    {isUpdatingDraft ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Wand2 className="w-3.5 h-3.5" />
+                    )}
+                    <span>Update Draft</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          /* Empty Workspace Prompt */
+          <div className="p-12 text-center bg-white border border-dashed border-slate-200 rounded-2xl space-y-3">
+            <div className="w-12 h-12 rounded-full bg-blue-50 text-blue-600 flex items-center justify-center mx-auto">
+              <Globe className="w-6 h-6" />
+            </div>
+            <h3 className="font-bold text-slate-800 text-base">No company researched yet</h3>
+            <p className="text-slate-500 text-xs max-w-md mx-auto">
+              Paste any startup URL in the search bar above (e.g. <code>resend.com</code> or <code>linear.app</code>). Cold Start will inspect their changelog, discover their founders, and draft an outreach email grounded in verified facts.
+            </p>
+          </div>
+        )}
+
+        {/* Real Outreach Pipeline Board */}
+        <div className="space-y-3 pt-6 border-t border-slate-200">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <h3 className="font-bold text-slate-900 text-base">Outreach Pipeline</h3>
+              <span className="text-xs text-slate-500 font-mono">
+                ({pipeline.length} items tracked)
+              </span>
+            </div>
+
+            <div className="text-xs text-slate-500">
+              Auto-schedules Day 3 and Day 7 follow-up reminders
+            </div>
+          </div>
+
+          {pipeline.length === 0 ? (
+            <div className="p-8 text-center bg-white border border-dashed border-slate-200 rounded-2xl text-slate-400 text-xs">
+              Pipeline is empty. Every email sent via Gmail will be tracked here with automated follow-up schedules.
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              {pipeline.map((item) => (
+                <div
+                  key={item.id}
+                  className="p-3.5 bg-white border border-slate-200 rounded-xl space-y-2 hover:border-slate-300 transition-colors shadow-sm text-xs"
+                >
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="font-bold text-slate-900">{item.companyName}</div>
+                      <div className="text-[11px] text-slate-500">{item.person.name}</div>
+                    </div>
+                    <span
+                      className={`px-2 py-0.5 rounded font-bold text-[10px] ${
+                        item.status === "Replied"
+                          ? "bg-emerald-100 text-emerald-800"
+                          : item.status === "Sent"
+                          ? "bg-blue-100 text-blue-800"
+                          : "bg-slate-100 text-slate-700"
+                      }`}
+                    >
+                      {item.status}
+                    </span>
+                  </div>
+
+                  <div className="text-[11px] text-slate-600 line-clamp-1 italic">
+                    &ldquo;{item.drafts?.email?.subject}&rdquo;
+                  </div>
+
+                  {item.sentAt && (
+                    <div className="text-[10px] text-slate-400 font-mono">
+                      Sent: {new Date(item.sentAt).toLocaleDateString()}
                     </div>
                   )}
-                </div>
 
-                {/* Footnote & Action Buttons */}
-                <div className="pt-4 border-t border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
-                  <span className="text-slate-500 font-medium">
-                    <span className="bg-slate-100 border-b-2 border-blue-400 font-semibold text-slate-800 px-1 py-0.5 rounded-xs">
-                      Highlighted
-                    </span>{" "}
-                    lines come from a source
-                  </span>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={handleCopy}
-                      className="px-3.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-slate-700 flex items-center gap-1.5 transition-all active:scale-95 shadow-xs"
-                    >
-                      {copied ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          <span className="text-emerald-600">Copied</span>
-                        </>
-                      ) : (
-                        <>
-                          <Copy className="w-3.5 h-3.5 text-slate-500" />
-                          <span>Copy</span>
-                        </>
-                      )}
-                    </button>
-
-                    <button
-                      onClick={handleAddToPipeline}
-                      className="px-3.5 py-1.5 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 font-semibold text-slate-700 flex items-center gap-1.5 transition-all active:scale-95 shadow-xs"
-                    >
-                      {pipelineAdded ? (
-                        <>
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                          <span className="text-emerald-600">Added!</span>
-                        </>
-                      ) : (
-                        <span>Add to pipeline</span>
-                      )}
-                    </button>
-
-                    <a
-                      href={gmailComposeUrl}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-semibold flex items-center gap-1.5 transition-all shadow-sm active:scale-95"
-                    >
-                      <span>Open in Gmail</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
-                    </a>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Card 3: Specificity Score & Checks (Matching screenshot 2) */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6">
-              <div className="grid grid-cols-1 sm:grid-cols-12 gap-6 items-center">
-                {/* Score */}
-                <div className="sm:col-span-3 flex sm:flex-col items-center sm:items-start gap-2">
-                  <span className="text-5xl font-black text-blue-600 font-mono tracking-tight">
-                    {drafts.specificityScore}
-                  </span>
-                  <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                    Specificity
-                  </span>
-                </div>
-
-                {/* 4 Check Items */}
-                <div className="sm:col-span-9 grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
-                  <div className="flex items-center gap-2 text-slate-700 font-medium">
-                    <span className="text-emerald-600 font-bold">✓</span>
-                    <span>Names a real product detail</span>
-                  </div>
-
-                  <div className="flex items-center gap-2 text-slate-700 font-medium">
-                    <span className="text-emerald-600 font-bold">✓</span>
-                    <span>One clear ask</span>
-                  </div>
-
-                  <div className="flex items-center gap-2 text-slate-700 font-medium">
-                    <span className="text-emerald-600 font-bold">✓</span>
-                    <span>Under 90 words</span>
-                  </div>
-
-                  <div className="flex items-center gap-2 text-slate-700 font-medium">
-                    <span className="text-amber-500 font-bold">!</span>
-                    <span>
-                      Matched project: <strong>{userProfile.activeProject}</strong>.{" "}
-                      <button
-                        onClick={handleSwapProject}
-                        className="text-blue-600 hover:text-blue-700 font-semibold underline"
-                      >
-                        Swap?
-                      </button>
-                    </span>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* ================= RIGHT COLUMN ================= */}
-          <div className="lg:col-span-4 space-y-6">
-            {/* Card 1: Sample Data Metrics */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
-              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-                THIS WEEK, SAMPLE DATA
-              </span>
-
-              <div className="grid grid-cols-3 gap-2 text-center">
-                <div>
-                  <div className="text-3xl font-black text-slate-900 font-mono">14</div>
-                  <div className="text-[11px] text-slate-500 font-medium mt-0.5">sent</div>
-                </div>
-                <div>
-                  <div className="text-3xl font-black text-slate-900 font-mono">3</div>
-                  <div className="text-[11px] text-slate-500 font-medium mt-0.5">replies</div>
-                </div>
-                <div>
-                  <div className="text-3xl font-black text-slate-900 font-mono">90s</div>
-                  <div className="text-[11px] text-slate-500 font-medium mt-0.5">per email</div>
-                </div>
-              </div>
-            </div>
-
-            {/* Card 2: Pipeline Board */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-5">
-              <h3 className="font-bold text-slate-900 text-base">Pipeline</h3>
-
-              {/* Section: Follow-up Due Today */}
-              <div className="space-y-3">
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-                  FOLLOW-UP DUE TODAY
-                </span>
-
-                <div className="space-y-2.5">
-                  {/* Lumen Health */}
-                  <div className="flex items-center justify-between gap-3 p-2 rounded-xl hover:bg-slate-50 transition-colors">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-lg bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center flex-shrink-0">
-                        L
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-semibold text-xs text-slate-900 truncate">
-                          Lumen Health
-                        </div>
-                        <div className="text-[10px] text-slate-400">Sent 3 days ago</div>
-                      </div>
+                  {/* Follow-up reminder indicator */}
+                  {item.status !== "Replied" && item.followUpDay3Due && (
+                    <div className="text-[10px] text-amber-700 flex items-center gap-1 font-medium">
+                      <Clock className="w-3 h-3" />
+                      <span>
+                        Day 3 due: {new Date(item.followUpDay3Due).toLocaleDateString()}
+                      </span>
                     </div>
+                  )}
+
+                  {/* Actions: Send Gmail or Mark Replied */}
+                  <div className="flex items-center justify-between pt-1 border-t border-slate-100">
+                    <button
+                      onClick={() => handleSendViaGmail(item)}
+                      className="text-blue-600 hover:text-blue-800 text-[11px] font-semibold flex items-center gap-1"
+                    >
+                      <Send className="w-3 h-3" /> Gmail
+                    </button>
+
                     <button
                       onClick={() => {
-                        setActiveTab("day3");
-                        window.scrollTo({ top: 300, behavior: "smooth" });
+                        handleUpdateStatus(item.id, "Replied");
+                        setSelectedReplyItem(item);
                       }}
-                      className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg whitespace-nowrap shadow-2xs"
+                      className="text-emerald-700 hover:text-emerald-900 text-[11px] font-semibold"
                     >
-                      Draft day 3
-                    </button>
-                  </div>
-
-                  {/* Parcel */}
-                  <div className="flex items-center justify-between gap-3 p-2 rounded-xl hover:bg-slate-50 transition-colors">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className="w-8 h-8 rounded-lg bg-purple-100 text-purple-700 font-bold text-xs flex items-center justify-center flex-shrink-0">
-                        P
-                      </div>
-                      <div className="min-w-0">
-                        <div className="font-semibold text-xs text-slate-900 truncate">Parcel</div>
-                        <div className="text-[10px] text-slate-400">Sent 3 days ago</div>
-                      </div>
-                    </div>
-                    <button
-                      onClick={() => {
-                        setActiveTab("day3");
-                        window.scrollTo({ top: 300, behavior: "smooth" });
-                      }}
-                      className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg whitespace-nowrap shadow-2xs"
-                    >
-                      Draft day 3
+                      Mark Replied
                     </button>
                   </div>
                 </div>
-              </div>
-
-              {/* Section: Sent */}
-              <div className="space-y-3 pt-2 border-t border-slate-100">
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-                  SENT
-                </span>
-
-                {/* Atlas Robotics */}
-                <div className="flex items-center justify-between gap-3 p-2 rounded-xl hover:bg-slate-50 transition-colors">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-amber-100 text-amber-700 font-bold text-xs flex items-center justify-center flex-shrink-0">
-                      A
-                    </div>
-                    <div className="min-w-0">
-                      <div className="font-semibold text-xs text-slate-900 truncate">
-                        Atlas Robotics
-                      </div>
-                      <div className="text-[10px] text-slate-400">Sent yesterday</div>
-                    </div>
-                  </div>
-                  <span className="text-[11px] text-slate-400 font-medium px-2 py-0.5 rounded-full bg-slate-100">
-                    Waiting
-                  </span>
-                </div>
-              </div>
-
-              {/* Section: Replied */}
-              <div className="space-y-3 pt-2 border-t border-slate-100">
-                <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider block">
-                  REPLIED
-                </span>
-
-                {/* Orbit Labs */}
-                <div className="flex items-center justify-between gap-2 p-2 rounded-xl hover:bg-slate-50 transition-colors">
-                  <div className="flex items-center gap-2.5 min-w-0">
-                    <div className="w-8 h-8 rounded-lg bg-indigo-100 text-indigo-700 font-bold text-xs flex items-center justify-center flex-shrink-0">
-                      O
-                    </div>
-                    <div className="min-w-0">
-                      <div className="font-semibold text-xs text-slate-900 truncate">
-                        Orbit Labs
-                      </div>
-                      <div className="text-[10px] text-slate-400">Replied 2 hours ago</div>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-1.5 flex-shrink-0">
-                    <span className="text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 font-semibold px-2 py-0.5 rounded-full">
-                      Replied
-                    </span>
-                    <button
-                      onClick={() => {
-                        const orbitItem = pipeline.find((p) => p.id === "orbit");
-                        if (orbitItem) setSelectedReplyItem(orbitItem);
-                      }}
-                      className="px-2.5 py-1 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-2xs"
-                    >
-                      Reply coach
-                    </button>
-                  </div>
-                </div>
-              </div>
+              ))}
             </div>
-
-            {/* Card 3: What gets replies */}
-            <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs p-6 space-y-4">
-              <div>
-                <h3 className="font-bold text-slate-900 text-sm">What gets replies</h3>
-                <span className="text-[11px] text-slate-400">Sample data</span>
-              </div>
-
-              <div className="space-y-3.5">
-                {/* Bar 1 */}
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs font-medium">
-                    <span className="text-slate-700 font-semibold">
-                      Cites a recent changelog entry
-                    </span>
-                    <span className="text-blue-600 font-bold font-mono">41%</span>
-                  </div>
-                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-blue-600 h-2 rounded-full transition-all duration-500"
-                      style={{ width: "41%" }}
-                    />
-                  </div>
-                </div>
-
-                {/* Bar 2 */}
-                <div className="space-y-1.5">
-                  <div className="flex justify-between text-xs font-medium">
-                    <span className="text-slate-500">Generic opener</span>
-                    <span className="text-slate-500 font-mono">8%</span>
-                  </div>
-                  <div className="w-full bg-slate-100 rounded-full h-2 overflow-hidden">
-                    <div
-                      className="bg-slate-300 h-2 rounded-full transition-all duration-500"
-                      style={{ width: "8%" }}
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
       </main>
 
-      {/* Modals */}
-      <ProfileModal
-        isOpen={isProfileModalOpen}
-        onClose={() => setIsProfileModalOpen(false)}
+      {/* Modals & Drawers */}
+      <ProfileManagerModal
+        isOpen={isProfileOpen}
+        onClose={() => setIsProfileOpen(false)}
         profile={userProfile}
-        onSave={(updated) => {
-          setUserProfile(updated);
-          generateOutreach(company, voiceNote, updated);
-        }}
+        onProfileUpdate={(updated) => setUserProfile(updated)}
       />
 
-      <ReplyCoachModal
-        isOpen={!!selectedReplyItem}
-        onClose={() => setSelectedReplyItem(null)}
-        item={selectedReplyItem}
+      <AutopilotDrawer
+        isOpen={isAutopilotOpen}
+        onClose={() => setIsAutopilotOpen(false)}
+        userProfile={userProfile}
+        onSelectForEdit={(item) => {
+          if (item.companyBrief && item.drafts) {
+            setCompanyBrief(item.companyBrief);
+            setDrafts(item.drafts);
+            setSelectedPerson(item.selectedPerson || null);
+          }
+        }}
+        onPipelineUpdated={() => setPipeline(getStoredPipeline())}
       />
+
+      {companyBrief && (
+        <JobToolsModal
+          isOpen={isJobToolsOpen}
+          onClose={() => setIsJobToolsOpen(false)}
+          userProfile={userProfile}
+          companyBrief={companyBrief}
+        />
+      )}
+
+      <RealStatsModal
+        isOpen={isStatsOpen}
+        onClose={() => setIsStatsOpen(false)}
+        pipeline={pipeline}
+      />
+
+      {selectedReplyItem && (
+        <ReplyCoachModal
+          isOpen={!!selectedReplyItem}
+          onClose={() => setSelectedReplyItem(null)}
+          pipelineItem={selectedReplyItem}
+        />
+      )}
     </div>
   );
 }
