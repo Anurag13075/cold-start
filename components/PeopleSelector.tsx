@@ -109,10 +109,22 @@ export function PeopleSelector({
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={(e) => e.stopPropagation()}
-                      className="text-slate-400 hover:text-slate-700 p-1 rounded transition-colors"
+                      className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-[10px] transition-colors"
                       title="View X profile"
                     >
-                      <ExternalLink className="w-3.5 h-3.5" />
+                      𝕏
+                    </a>
+                  )}
+                  {person.linkedInUrl && (
+                    <a
+                      href={person.linkedInUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      className="px-2 py-0.5 rounded bg-blue-100 hover:bg-blue-200 text-blue-800 font-bold text-[10px] transition-colors"
+                      title="View LinkedIn profile"
+                    >
+                      in
                     </a>
                   )}
                   {person.githubUrl && (
@@ -121,10 +133,10 @@ export function PeopleSelector({
                       target="_blank"
                       rel="noopener noreferrer"
                       onClick={(e) => e.stopPropagation()}
-                      className="text-slate-400 hover:text-slate-700 p-1 rounded transition-colors"
+                      className="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold text-[10px] transition-colors"
                       title="View GitHub profile"
                     >
-                      <ExternalLink className="w-3.5 h-3.5" />
+                      GitHub
                     </a>
                   )}
                 </div>

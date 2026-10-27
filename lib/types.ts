@@ -87,6 +87,7 @@ export interface CompanyPerson {
   xUrl?: string;
   githubUsername?: string;
   githubUrl?: string;
+  linkedInUrl?: string;
   email?: string;
   emailReliability: EmailReliability;
   emailSource?: string;

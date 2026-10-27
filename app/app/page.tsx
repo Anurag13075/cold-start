@@ -92,6 +92,7 @@ export default function AppPage() {
 
   // Anti-repeat override warning state
   const [antiRepeatWarning, setAntiRepeatWarning] = useState<string | null>(null);
+  const [actionToast, setActionToast] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
 
@@ -330,25 +331,13 @@ export default function AppPage() {
     }
   };
 
-  // Send via Gmail (Zero-OAuth Instant Send)
-  const handleSendViaGmail = (item?: PipelineItem) => {
-    const brief = item ? item.brief : companyBrief;
-    const targetDrafts = item ? item.drafts : drafts;
-    const person = item ? item.person : selectedPerson;
-
-    if (!brief || !targetDrafts) return;
-
-    const recipientEmail = person?.email || "";
-    const subject = encodeURIComponent(targetDrafts.email.subject);
-    const body = encodeURIComponent(targetDrafts.email.body);
-
-    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(
-      recipientEmail
-    )}&su=${subject}&body=${body}`;
-
-    window.open(gmailUrl, "_blank");
-
-    // Mark as Sent & Schedule Day 3 and Day 7 follow-up dates
+  // Helper to record sent items in pipeline with follow-up schedule
+  const trackSentItem = (
+    brief: CompanyBrief,
+    targetDrafts: GeneratedDrafts,
+    person: CompanyPerson | null,
+    item?: PipelineItem
+  ) => {
     const now = new Date();
     const day3Date = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000).toISOString();
     const day7Date = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000).toISOString();
@@ -386,6 +375,73 @@ export default function AppPage() {
 
     setPipeline(updatedPipeline);
     saveStoredPipeline(updatedPipeline);
+  };
+
+  // Send via Gmail (Zero-OAuth Instant Send)
+  const handleSendViaGmail = (item?: PipelineItem) => {
+    const brief = item ? item.brief : companyBrief;
+    const targetDrafts = item ? item.drafts : drafts;
+    const person = item ? item.person : selectedPerson;
+
+    if (!brief || !targetDrafts) return;
+
+    const recipientEmail = person?.email || "";
+    const subject = encodeURIComponent(targetDrafts.email.subject);
+    const body = encodeURIComponent(targetDrafts.email.body);
+
+    const gmailUrl = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(
+      recipientEmail
+    )}&su=${subject}&body=${body}`;
+
+    window.open(gmailUrl, "_blank");
+    trackSentItem(brief, targetDrafts, person, item);
+  };
+
+  // Send via X / Twitter DM
+  const handleSendViaX = (item?: PipelineItem) => {
+    const brief = item ? item.brief : companyBrief;
+    const targetDrafts = item ? item.drafts : drafts;
+    const person = item ? item.person : selectedPerson;
+
+    if (!brief || !targetDrafts) return;
+
+    navigator.clipboard.writeText(targetDrafts.dm.body);
+    setActionToast("Copied X DM to clipboard! Opening X...");
+    setTimeout(() => setActionToast(null), 3500);
+
+    let xUrl = "https://x.com/messages";
+    if (person?.xHandle) {
+      const handle = person.xHandle.replace(/^@/, "");
+      xUrl = `https://x.com/${handle}`;
+    } else if (person?.xUrl) {
+      xUrl = person.xUrl;
+    }
+    window.open(xUrl, "_blank");
+
+    trackSentItem(brief, targetDrafts, person, item);
+  };
+
+  // Connect on LinkedIn
+  const handleSendViaLinkedIn = (item?: PipelineItem) => {
+    const brief = item ? item.brief : companyBrief;
+    const targetDrafts = item ? item.drafts : drafts;
+    const person = item ? item.person : selectedPerson;
+
+    if (!brief || !targetDrafts) return;
+
+    navigator.clipboard.writeText(targetDrafts.linkedIn.body);
+    setActionToast("Copied connection note! Opening LinkedIn...");
+    setTimeout(() => setActionToast(null), 3500);
+
+    let liUrl = `https://www.linkedin.com/search/results/all/?keywords=${encodeURIComponent(
+      (person?.name || "founder") + " " + brief.name
+    )}`;
+    if (person?.linkedInUrl) {
+      liUrl = person.linkedInUrl;
+    }
+    window.open(liUrl, "_blank");
+
+    trackSentItem(brief, targetDrafts, person, item);
   };
 
   // Update status in pipeline
@@ -738,13 +794,31 @@ export default function AppPage() {
                       <span>{copiedDraft ? "Copied" : "Copy"}</span>
                     </button>
 
-                    <button
-                      onClick={() => handleSendViaGmail()}
-                      className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
-                    >
-                      <Send className="w-3.5 h-3.5" />
-                      <span>Send via Gmail (No OAuth)</span>
-                    </button>
+                    {activeDraftTab === "email" || activeDraftTab === "day3" || activeDraftTab === "day7" ? (
+                      <button
+                        onClick={() => handleSendViaGmail()}
+                        className="px-4 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                      >
+                        <Send className="w-3.5 h-3.5" />
+                        <span>Send via Gmail (No OAuth)</span>
+                      </button>
+                    ) : activeDraftTab === "dm" ? (
+                      <button
+                        onClick={() => handleSendViaX()}
+                        className="px-4 py-1.5 bg-slate-900 hover:bg-black text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                      >
+                        <span className="font-bold text-xs">𝕏</span>
+                        <span>Open X / Twitter DM</span>
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => handleSendViaLinkedIn()}
+                        className="px-4 py-1.5 bg-[#0a66c2] hover:bg-[#004182] text-white rounded-lg text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+                      >
+                        <span className="font-bold text-xs">in</span>
+                        <span>Connect on LinkedIn</span>
+                      </button>
+                    )}
                   </div>
                 </div>
 
@@ -996,6 +1070,13 @@ export default function AppPage() {
           onClose={() => setSelectedReplyItem(null)}
           pipelineItem={selectedReplyItem}
         />
+      )}
+
+      {actionToast && (
+        <div className="fixed bottom-6 right-6 z-50 px-4 py-2.5 bg-slate-900 text-white rounded-xl shadow-2xl text-xs font-semibold flex items-center gap-2 border border-slate-700 animate-in fade-in slide-in-from-bottom-2">
+          <Check className="w-4 h-4 text-emerald-400" />
+          <span>{actionToast}</span>
+        </div>
       )}
     </div>
   );
