@@ -72,13 +72,14 @@ JSON schema:
   }
 }
 
+
 function heuristicResumeParse(rawText: string): ResumeData {
   const lines = rawText.split("\n").map((l) => l.trim()).filter(Boolean);
   const links: string[] = [];
   const skills: string[] = [];
   const education: string[] = [];
 
-  // Extract URLs
+
   const urlRegex = /(https?:\/\/[^\s]+)/g;
   const foundUrls = rawText.match(urlRegex) || [];
   links.push(...foundUrls);

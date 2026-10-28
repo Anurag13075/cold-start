@@ -57,7 +57,7 @@ export async function callGroqChat(
         },
         body: JSON.stringify({
           model: modelId,
-          messages,
+          messages, 
           temperature: 0.3,
           max_tokens: 1500,
           response_format: { type: "json_object" },
@@ -77,6 +77,7 @@ export async function callGroqChat(
         const errorData = await response.text();
         throw new Error(`Groq API error (${response.status}): ${errorData}`);
       }
+      
 
       const data = await response.json();
       const rawText = data?.choices?.[0]?.message?.content || "";
